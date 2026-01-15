@@ -1,6 +1,6 @@
-# Secrets Scanner
+# Secrets Finder
 
-**Secrets Scanner** is a Python tool designed to detect sensitive information (secrets, API keys, tokens, etc.) in files and directories. It uses regex patterns to identify potential leaks and can generate a JSON report for further analysis.
+**Secrets Finder** is a Python tool designed to detect sensitive information (secrets, API keys, tokens, etc.) in files and directories. It uses regex patterns to identify potential leaks and can generate a JSON report for further analysis.
 
 ---
 
