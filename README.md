@@ -32,20 +32,22 @@
 
 
 ## Secrets Patterns
+
 The tool checks for the following secret types by default:
 
-AWS Access Key
-AWS Secret Key
-GitHub Token
-Generic API Key
-Private Key
-SSH Key
-Password
-Bearer Token
-Database URL
-Slack Token
-Base64 strings
-You can modify or add patterns in the SECRET_PATTERNS dictionary in the script.
+- AWS Access Key
+- AWS Secret Key
+- GitHub Token
+- Generic API Key
+- Private Key
+- SSH Key
+- Password
+- Bearer Token
+- Database URL
+- Slack Token
+- Base64 strings
+
+You can modify or add patterns in the `SECRET_PATTERNS` dictionary in the script.
 
 Excluded Directories
 By default, the following directories are excluded:
