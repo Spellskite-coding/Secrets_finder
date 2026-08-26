@@ -1,185 +1,170 @@
 # secrets-finder
 
-Un scanner rapide et à faible taux de faux positifs pour les identifiants codés en dur dans les arborescences de code source.
-Fichier unique, bibliothèque standard uniquement, Python 3.10+.
+A fast, low-false-positive scanner for hardcoded credentials in source code trees.
+Single file, standard library only, Python 3.10+.
 
 ```bash
-python3 secrets_finder.py .                       # scanner l'arborescence courante
-python3 secrets_finder.py . --git-tracked         # uniquement les fichiers suivis par git
+python3 secrets_finder.py .                       # scan the current tree
+python3 secrets_finder.py . --git-tracked         # only files tracked by git
 python3 secrets_finder.py . -f sarif -o out.sarif # GitHub Code Scanning
-python3 secrets_finder.py --self-test             # vérifier les 57 règles
+python3 secrets_finder.py --self-test             # verify the 57 rules
 ```
 
-## Résultats mesurés
+## Measured results
 
-Benchmark réalisé sur `/usr/lib/python3.13` — 627 fichiers texte, 11,2 Mo,
-303 452 lignes — sur 8 cœurs. Les temps correspondent au minimum de 5
-exécutions à cache chaud, les trois mesurées consécutivement.
+Benchmark run on `/usr/lib/python3.13` — 627 text files, 11.2 MB,
+303,452 lines — on 8 cores. Times are the minimum of 5 warm-cache runs,
+the three measured consecutively.
 
-| | règles | temps | accélération | résultats |
+| | rules | time | speedup | results |
 |---|---|---|---|---|
-| boucle naïve ligne×motif | 11 | 18,55 s | — | **348** (quasiment tous faux) |
-| secrets-finder `-j 1` | 59 | 5,08 s | 3,7× | 1 |
-| secrets-finder `-j 8` | 59 | **1,31 s** | **14,1×** | **1** |
+| naive line×pattern loop | 11 | 18.55 s | — | **348** (nearly all wrong) |
+| secrets-finder `-j 1` | 59 | 5.08 s | 3.7× | 1 |
+| secrets-finder `-j 8` | 59 | **1.31 s** | **14.1×** | **1** |
 
-**14× plus rapide tout en évaluant 5× plus de règles, et 348 résultats ramenés à 1.**
+**14× faster while evaluating 5× more rules, and 348 results narrowed down to 1.**
 
-Les temps absolus dépendent de la charge de la machine — une seconde exécution
-du même benchmark sur une machine inactive a donné 7,94 s / 2,08 s / 0,57 s.
-Les ratios étaient identiques à 2 % près, donc c'est l'accélération qu'il faut
-retenir, pas les secondes.
+Absolute times depend on machine load — a second run of the same benchmark
+on an idle machine gave 7.94 s / 2.08 s / 0.57 s. The ratios matched within
+2%, so it's the speedup that matters, not the seconds.
 
-Le seul résultat restant est `passwd='geheim$parole'` dans une docstring
-`urllib.request` — un véritable mot de passe littéral dans le code source,
-au sein d'une documentation d'exemple. On peut soutenir qu'il s'agit d'une
-correspondance correcte plutôt que d'un faux positif ; le supprimer
-nécessiterait une analyse syntaxique des commentaires par langage, ce que le
-scanner ne tente délibérément pas de faire.
+The one remaining result is `passwd='geheim$parole'` in a `urllib.request`
+docstring — an actual literal password in the source code, inside example
+documentation. One could argue this is a correct match rather than a false
+positive; removing it would require per-language syntactic parsing of
+comments, which the scanner deliberately doesn't attempt.
 
-Le rappel (recall) est vérifié séparément : un corpus avec un identifiant
-planté par règle obtient un score de **59/59**, sans aucun doublon signalé.
+Recall is checked separately: a corpus with one planted credential per
+rule scores **59/59**, with no duplicate reported.
 
-### Sur d'autres arborescences réelles
+### On other real-world trees
 
-| arborescence | résultats | évaluation |
+| tree | results | assessment |
 |---|---|---|
-| `/usr/lib/python3.13` | 1 | un mot de passe littéral dans une docstring |
-| `/usr/share/doc` | 13 | 10 sont de vrais fichiers de clés PEM (clés d'exemple OpenVPN/aiohttp) |
-| `/etc` | 1 | un en-tête PEM au sein d'un motif MIME magique ImageMagick |
+| `/usr/lib/python3.13` | 1 | a literal password in a docstring |
+| `/usr/share/doc` | 13 | 10 are genuine PEM key files (OpenVPN/aiohttp example keys) |
+| `/etc` | 1 | a PEM header inside an ImageMagick MIME magic pattern |
 
-Le résultat dans `/etc` pourrait être éliminé en ancrant le motif de clé
-privée au début d'une ligne, et cela n'a délibérément pas été fait : dans la
-documentation HTML d'OpenVPN, ce même en-tête *est* en début de ligne, donc
-un ancrage ne réglerait pas la catégorie, et cela ferait perdre les clés
-intégrées dans le code source sous forme de littéraux de chaîne
-(`KEY = "-----BEGIN RSA PRIVATE KEY-----\n..."`), ce qui constitue une vraie
-fuite. Une dismission de triage à bas coût vaut mieux qu'une clé manquée.
+The `/etc` result could be eliminated by anchoring the private-key pattern
+to the start of a line, and this was deliberately not done: in OpenVPN's
+HTML documentation, that same header *is* at the start of a line, so
+anchoring wouldn't fix the category, and it would lose keys embedded in
+source code as string literals
+(`KEY = "-----BEGIN RSA PRIVATE KEY-----\n..."`), which is a real leak. A
+cheap triage dismissal beats a missed key.
 
-## Pourquoi c'est rapide
+## Why it's fast
 
-Le profilage de l'implémentation naïve a montré que 83 % du temps
-d'exécution se trouvait dans un seul appel — la correspondance de motif sur
-chaque ligne. Trois changements expliquent cet écart :
+Profiling the naive implementation showed that 83% of runtime was spent in
+a single call — pattern matching on every line. Three changes account for
+that gap:
 
-1. **Pré-filtrage par mots-clés.** Chaque règle déclare des mots-clés
-   littéraux peu coûteux (`akia`, `ghp_`, `private key`). Une seule regex
-   combinée rejette les lignes qui ne peuvent correspondre à aucune règle ;
-   seules les survivantes — 1,4 % des lignes ici — sont testées contre le
-   petit sous-ensemble de règles dont les mots-clés sont effectivement
-   présents.
+1. **Keyword pre-filtering.** Every rule declares cheap literal keywords
+   (`akia`, `ghp_`, `private key`). A single combined regex rejects lines
+   that can't match any rule; only the survivors — 1.4% of lines here —
+   are tested against the small subset of rules whose keywords are
+   actually present.
 
-2. **Pas de `re.IGNORECASE` sur le chemin critique.** Le repli sur la casse
-   met en échec le scan littéral du moteur de regex. Mettre chaque ligne en
-   minuscules une seule fois puis faire correspondre un déclencheur sensible
-   à la casse est **7× plus rapide**, et la chaîne mise en minuscules est
-   ensuite réutilisée pour le pragma d'ignorance et la recherche de
-   candidats.
+2. **No `re.IGNORECASE` on the hot path.** The case-insensitive fallback
+   defeats the regex engine's literal scan. Lowercasing each line once
+   and then matching a case-sensitive trigger is **7× faster**, and the
+   lowercased string is then reused for the ignore pragma and candidate
+   lookup.
 
-3. **Multiprocessing, correctement fait.** Le module `re` de Python ne
-   libère pas le GIL, donc le scan est véritablement limité par le CPU et
-   les threads n'aideraient pas. Les workers compilent le jeu de règles une
-   seule fois dans un initialiseur, donc chaque tâche ne transmet qu'une
-   chaîne de chemin. En dessous de 200 fichiers, le pool coûte plus qu'il
-   ne fait gagner et le scan s'exécute en ligne.
+3. **Multiprocessing, done properly.** Python's `re` module doesn't
+   release the GIL, so the scan is genuinely CPU-bound and threads
+   wouldn't help. Workers compile the ruleset once, in an initializer, so
+   each task only passes a path string. Below 200 files, the pool costs
+   more than it saves and the scan runs inline.
 
-## Pourquoi c'est silencieux
+## Why it's quiet
 
-Les 348 résultats de la version naïve provenaient de motifs incapables de
-distinguer un identifiant d'un texte ordinaire. Quatre filtres les
-remplacent :
+The naive version's 348 results came from patterns unable to distinguish
+a credential from ordinary text. Four filters replace that:
 
-- **Motifs structurels.** Correspondre à la forme documentée d'un
-  identifiant (`AKIA` + 16 caractères majuscules) plutôt qu'à un mot anglais
-  à proximité.
-- **Entropie.** Chaque règle capture le secret lui-même dans le groupe 1,
-  donc l'entropie de Shannon est mesurée sur l'identifiant seul, pas sur le
-  texte environnant.
-- **Rejet des valeurs de substitution (placeholders).**
-  `AKIAIOSFODNN7EXAMPLE`, `<your-token>`, `${API_KEY}`, `xxxxxxxx` et
-  consorts.
-- **Rejet des références de code.** Appliqué uniquement aux règles qui
-  correspondent sur un *nom* de variable (`API_TOKEN = ...`) : une valeur
-  qui est un identifiant qualifié ou un appel de fonction est du code, pas
-  un identifiant secret. À elle seule, cette règle a éliminé 3 des 4 faux
-  positifs restants.
+- **Structural patterns.** Match the documented shape of a credential
+  (`AKIA` + 16 uppercase characters) rather than a nearby English word.
+- **Entropy.** Every rule captures the secret itself in group 1, so
+  Shannon entropy is measured on the credential alone, not on the
+  surrounding text.
+- **Placeholder rejection.** `AKIAIOSFODNN7EXAMPLE`, `<your-token>`,
+  `${API_KEY}`, `xxxxxxxx` and the like.
+- **Code-reference rejection.** Applied only to rules that match on a
+  variable *name* (`API_TOKEN = ...`): a value that's a qualified
+  identifier or a function call is code, not a secret credential. On its
+  own, this rule eliminated 3 of the 4 remaining false positives.
 
-Les résultats qui se chevauchent sont fusionnés — une clé de service
-Supabase est aussi un JWT valide, et rapporter les deux revient à compter
-deux fois le même secret. La règle la plus spécifique l'emporte.
+Overlapping results are merged — a Supabase service key is also a valid
+JWT, and reporting both would count the same secret twice. The more
+specific rule wins.
 
-## Comportement notable
+## Notable behavior
 
-- **Les secrets sont expurgés (redacted) par défaut**, dans tous les formats
-  de sortie y compris l'extrait de contexte. Un rapport de scan est sinon
-  lui-même un artefact porteur de secrets qui finit dans les logs CI et les
-  tickets. `--show-secrets` permet de désactiver ce comportement.
-- **Les fichiers minifiés sont quand même scannés.** Les lignes trop longues
-  sont découpées en fenêtres qui se chevauchent plutôt que d'être ignorées,
-  donc une clé intégrée à la colonne 320 004 d'un bundle sur une seule
-  ligne est quand même trouvée, sans le coût de faire correspondre la ligne
-  entière d'un coup.
-- **Les binaires sont ignorés** par extension, puis en sondant les 8 premiers
-  Ko à la recherche d'octets NUL.
-- **Les fichiers UTF-16 et UTF-32 sont scannés, pas ignorés.** Ces
-  encodages complètent l'ASCII avec des octets NUL, donc la sonde binaire
-  les rejette à première vue — et PowerShell, .NET et les exports de
-  registre émettent couramment de l'UTF-16LE. Les BOM sont reconnus, et
-  l'UTF-16 sans BOM est déduit par l'alternance. Cette déduction vérifie
-  *les deux côtés* de chaque paire d'octets : un en-tête ELF est composé
-  d'environ 82 % de NUL, la plupart sur des positions impaires, ce qui imite
-  parfaitement l'UTF-16LE, et seule l'exigence que l'autre côté soit du
-  texte imprimable permet de les distinguer.
-- **Les liens symboliques ne sont pas suivis par défaut.** Avec
-  `--follow-symlinks`, les répertoires et fichiers sont suivis par
-  `(device, inode)`, donc un cycle de liens symboliques est détecté plutôt
-  que laissé au `ELOOP` du noyau après environ 40 niveaux, et un fichier
-  accessible via plusieurs chemins est signalé une seule fois au lieu d'une
-  fois par chemin. Le chemin par défaut évite entièrement les appels
-  `stat()` supplémentaires.
-- **`--git-tracked`** délègue à `git ls-files` plutôt que de réimplémenter
-  la sémantique de `.gitignore`.
-- **Les baselines** (`--write-baseline` / `--baseline`) suppriment les
-  résultats connus par empreinte (fingerprint), ce qui permet d'adopter un
-  scan sur une base de code existante.
-- **Liste d'autorisation en ligne (allowlisting)** via
-  `pragma: allowlist secret`.
+- **Secrets are redacted by default**, across every output format
+  including the context excerpt. A scan report is otherwise itself a
+  secret-carrying artifact that ends up in CI logs and tickets.
+  `--show-secrets` disables this behavior.
+- **Minified files are still scanned.** Overly long lines are split into
+  overlapping windows rather than skipped, so a key embedded at column
+  320,004 of a single-line bundle is still found, without the cost of
+  matching the entire line at once.
+- **Binaries are skipped** by extension, then by probing the first 8 KB
+  for NUL bytes.
+- **UTF-16 and UTF-32 files are scanned, not skipped.** These encodings
+  pad ASCII with NUL bytes, so the binary probe rejects them at first
+  glance — and PowerShell, .NET and registry exports commonly emit
+  UTF-16LE. BOMs are recognized, and BOM-less UTF-16 is inferred from
+  alternation. This inference checks *both sides* of every byte pair: an
+  ELF header is about 82% NUL, mostly at odd positions, which perfectly
+  mimics UTF-16LE, and only requiring the other side to be printable text
+  tells them apart.
+- **Symlinks aren't followed by default.** With `--follow-symlinks`,
+  directories and files are tracked by `(device, inode)`, so a symlink
+  cycle is detected rather than left to the kernel's `ELOOP` after about
+  40 levels, and a file reachable via multiple paths is reported once
+  instead of once per path. The default path avoids extra `stat()` calls
+  entirely.
+- **`--git-tracked`** delegates to `git ls-files` rather than
+  reimplementing `.gitignore` semantics.
+- **Baselines** (`--write-baseline` / `--baseline`) suppress results known
+  by fingerprint, which makes adopting a scan on an existing codebase
+  practical.
+- **Inline allowlisting** via `pragma: allowlist secret`.
 
-## Codes de sortie
+## Exit codes
 
-| code | signification |
+| code | meaning |
 |---|---|
-| 0 | aucun résultat au niveau ou au-dessus de `--fail-on` |
-| 1 | résultats signalés |
-| 2 | erreur d'utilisation ou d'E/S — *le scan ne s'est pas exécuté* |
+| 0 | no result at or above `--fail-on` |
+| 1 | results reported |
+| 2 | usage or I/O error — *the scan didn't run* |
 
-Le fait de distinguer 1 et 2 permet à la CI de différencier « cette branche
-fuite une clé » de « le scanner était mal configuré ».
+Distinguishing 1 from 2 lets CI tell "this branch leaks a key" apart from
+"the scanner was misconfigured".
 
-## Règles
+## Rules
 
-59 détecteurs couvrant le cloud (AWS, GCP, Azure, DigitalOcean, Cloudflare),
-les VCS (GitHub, GitLab), l'IA (OpenAI, Anthropic, Hugging Face), les
-paiements (Stripe, Square, PayPal, Shopify), la messagerie (Slack, Discord,
-Telegram, Twilio, SendGrid), les paquets (npm, PyPI, RubyGems, Docker Hub),
-l'infrastructure (Vault, Terraform, Grafana, Datadog, Sentry), ainsi que les
-clés privées, les JWT, les URI de base de données et les affectations
-génériques.
+59 detectors covering cloud (AWS, GCP, Azure, DigitalOcean, Cloudflare),
+VCS (GitHub, GitLab), AI (OpenAI, Anthropic, Hugging Face), payments
+(Stripe, Square, PayPal, Shopify), messaging (Slack, Discord, Telegram,
+Twilio, SendGrid), packages (npm, PyPI, RubyGems, Docker Hub),
+infrastructure (Vault, Terraform, Grafana, Datadog, Sentry), as well as
+private keys, JWTs, database URIs and generic assignments.
 
-`--list-rules` les affiche avec leur sévérité, leurs mots-clés et leurs
-seuils d'entropie.
+`--list-rules` displays them with their severity, keywords and entropy
+thresholds.
 
-Chaque règle porte son propre faux identifiant structurellement valide
-comme vecteur de test. `--self-test` vérifie que chaque règle correspond à
-son vecteur *et* qu'un corpus de code propre ne produit aucun résultat,
-afin qu'une regex resserrée pour la précision ne puisse pas cesser
-silencieusement de détecter quoi que ce soit. Les exemples sont générés
-plutôt qu'écrits à la main, car un jeton de 82 caractères compté à la main
-est la façon dont un vecteur de test se dégrade silencieusement.
+Every rule carries its own structurally valid fake credential as a test
+vector. `--self-test` verifies that every rule matches its vector *and*
+that a clean code corpus produces no result, so that a regex tightened for
+precision can't silently stop detecting anything. Examples are generated
+rather than handwritten, since a hand-counted 82-character token is how a
+test vector silently rots.
 
 ## Tests
 
-`--self-test` ne nécessite aucune dépendance et couvre les règles. La suite
-pytest couvre tout le reste — 305 tests, ~1,7 s.
+`--self-test` requires no dependency and covers the rules. The pytest
+suite covers everything else — 305 tests, ~1.7 s.
 
 ```bash
 python3 -m venv .venv
@@ -188,74 +173,68 @@ pip install pytest
 python -m pytest
 ```
 
-Elle est organisée par propriété testée plutôt que par fonction : rappel,
-précision, expurgation (redaction), robustesse, découverte, suppression des
-chevauchements, intégrité du jeu de règles, entropie, déterminisme sous
-multiprocessing, et contrat de la CLI.
+It's organized by property tested rather than by function: recall,
+precision, redaction, robustness, discovery, overlap suppression, ruleset
+integrity, entropy, multiprocessing determinism, and the CLI contract.
 
-### Rompre la circularité
+### Breaking the circularity
 
-`--self-test` fait correspondre chaque règle à `rule.example` — la chaîne
-même pour laquelle la regex a été écrite. C'est circulaire : un motif
-codant une mauvaise idée du format d'un fournisseur est faux *en même
-temps que* son exemple, et le test passe quand même.
+`--self-test` matches every rule against `rule.example` — the very string
+the regex was written for. That's circular: a pattern encoding a wrong
+idea of a provider's format is wrong *at the same time as* its example,
+and the test still passes.
 
-`tests/realistic_corpus.py` existe pour rompre cette boucle. Il compose des
-identifiants à partir de la forme documentée de chaque fournisseur avec du
-contenu aléatoire issu d'un flux sans rapport, et les écrit dans les types
-de fichiers d'où les identifiants fuient réellement — `.env`, `Dockerfile`,
-`main.tf`, `.gitlab-ci.yml`, `.npmrc`, XML, propriétés Java, scripts shell.
-Une règle qui ne tolère silencieusement que `key = "value"` échoue là plutôt
-qu'en production. `test_corpus_covers_every_rule` empêche le corpus de
-prendre du retard sur le jeu de règles.
+`tests/realistic_corpus.py` exists to break that loop. It composes
+credentials from each provider's documented shape with random content from
+an unrelated stream, and writes them into the file types credentials
+actually leak from — `.env`, `Dockerfile`, `main.tf`, `.gitlab-ci.yml`,
+`.npmrc`, XML, Java properties, shell scripts. A rule that silently only
+tolerates `key = "value"` fails there instead of in production.
+`test_corpus_covers_every_rule` keeps the corpus from falling behind the
+ruleset.
 
-La limite irréductible : ces formes proviennent de la documentation, pas
-d'identifiants réels en circulation. Si une forme est fausse ici, elle est
-probablement fausse dans la règle aussi. Les entrées qui n'ont pas pu être
-confirmées sont marquées `UNVERIFIED` dans ce module.
+The irreducible limitation: these shapes come from documentation, not from
+real credentials in the wild. If a shape is wrong here, it's probably
+wrong in the rule too. Entries that couldn't be confirmed are marked
+`UNVERIFIED` in this module.
 
-Plusieurs tests existent parce que le comportement qu'ils figent était
-autrefois erroné :
+Several tests exist because the behavior they lock in used to be wrong:
 
-- `test_symlink_same_file_reported_once` — un secret accessible via un
-  fichier, un lien symbolique vers celui-ci et un lien symbolique vers son
-  répertoire était signalé trois fois.
-- `test_symlink_cycle_terminates` — un cycle de répertoires provoquait
-  auparavant une récursion jusqu'à ce que le noyau lève `ELOOP` à environ
-  40 niveaux.
-- `test_real_credentials_are_not_mistaken_for_placeholders` — l'heuristique
-  de faible variété évoluait avec la longueur, donc un jeton hexadécimal de
-  146 caractères ressemblait à du remplissage et était écarté.
-- `test_oversized_file_is_skipped` — avec un `--max-file-size` inférieur à
-  la sonde binaire de 8 Ko, la longueur de lecture suivante devenait
-  négative et levait une erreur, classant un fichier trop volumineux comme
-  « illisible ».
-- `test_overlapping_windows_do_not_double_report` — les fenêtres de scan se
-  chevauchent par conception, donc le même secret peut correspondre deux
-  fois et doit être fusionné.
-- `test_encoding_variants[utf-16-le]` — les fichiers UTF-16 étaient
-  classés comme binaires et jamais scannés.
-- `test_elf_header_is_not_mistaken_for_utf16` — le premier correctif pour
-  le point précédent faisait lire chaque binaire ELF comme du texte UTF-16.
-- `test_credential_starting_with_punctuation_is_not_dropped` — le filtre de
-  valeurs de substitution rejetait toute valeur commençant par `$`, `%`,
-  `(`, `[` ou `<`, sous prétexte qu'il s'agissait de syntaxe de gabarit,
-  écartant silencieusement des mots de passe robustes.
+- `test_symlink_same_file_reported_once` — a secret reachable via a file,
+  a symlink to it, and a symlink to its directory was reported three
+  times.
+- `test_symlink_cycle_terminates` — a directory cycle used to cause
+  recursion until the kernel raised `ELOOP` at around 40 levels.
+- `test_real_credentials_are_not_mistaken_for_placeholders` — the
+  low-variety heuristic scaled with length, so a 146-character hex token
+  looked like padding and was discarded.
+- `test_oversized_file_is_skipped` — with a `--max-file-size` smaller than
+  the 8 KB binary probe, the next read length went negative and raised an
+  error, classifying an oversized file as "unreadable".
+- `test_overlapping_windows_do_not_double_report` — scan windows overlap
+  by design, so the same secret can match twice and must be merged.
+- `test_encoding_variants[utf-16-le]` — UTF-16 files used to be classified
+  as binary and never scanned.
+- `test_elf_header_is_not_mistaken_for_utf16` — the first fix for the
+  point above made every ELF binary get read as UTF-16 text.
+- `test_credential_starting_with_punctuation_is_not_dropped` — the
+  placeholder filter rejected any value starting with `$`, `%`, `(`, `[`
+  or `<`, on the assumption it was template syntax, silently discarding
+  strong passwords.
 - `test_email_address_is_not_a_password` — `passwd="anonymous@domain.org"`,
-  la convention FTP anonyme, était signalé comme mot de passe codé en dur.
+  the anonymous-FTP convention, was reported as a hardcoded password.
 
-Tout ce qui suit `test_overlapping_windows_do_not_double_report` a été
-découvert par la suite de tests ou le corpus réaliste, et non par des tests
-manuels.
+Everything after `test_overlapping_windows_do_not_double_report` was
+discovered by the test suite or the realistic corpus, not by manual
+testing.
 
-`test_no_format_leaks_the_secret_by_default` est celui à conserver si l'on
-n'en garde qu'un seul : il grep chaque format de sortie à la recherche de
-l'identifiant brut.
+`test_no_format_leaks_the_secret_by_default` is the one to keep if you
+only keep one: it greps every output format for the raw credential.
 
-## Idées non implémentées
+## Ideas not implemented
 
-- Scanner l'historique git (`git log -p`) — les secrets survivent à la
-  suppression dans les commits.
-- Validation en direct des identifiants, comme le fait TruffleHog.
-  Délibérément omis : cela impliquerait d'envoyer les identifiants
-  découverts à des API tierces.
+- Scanning git history (`git log -p`) — secrets survive deletion in
+  commits.
+- Live credential validation, the way TruffleHog does. Deliberately
+  omitted: it would mean sending discovered credentials to third-party
+  APIs.
